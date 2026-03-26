@@ -1,0 +1,62 @@
+name = "echo-status-page"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+VERSION = "1.0.0"
+SERVICE_NAME = "echo-status-page"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "echo-status-page"
+database_id = "d89acd63-f77f-45c7-852c-839da84708cf"
+
+[[kv_namespaces]]
+binding = "CACHE"
+id = "8bf692b779bd44eb80b5daded61b531f"
+
+# Service bindings for health checks (same-account Workers)
+[[services]]
+binding = "ENGINE_RUNTIME"
+service = "echo-engine-runtime"
+
+[[services]]
+binding = "SHARED_BRAIN"
+service = "echo-shared-brain"
+
+[[services]]
+binding = "ECHO_CHAT"
+service = "echo-chat"
+
+[[services]]
+binding = "KNOWLEDGE_FORGE"
+service = "echo-knowledge-forge"
+
+[[services]]
+binding = "SPEAK_CLOUD"
+service = "echo-speak-cloud"
+
+[[services]]
+binding = "DOCTRINE_FORGE"
+service = "echo-doctrine-forge"
+
+[[services]]
+binding = "AUTONOMOUS_DAEMON"
+service = "echo-autonomous-daemon"
+
+[[services]]
+binding = "ANALYTICS_ENGINE"
+service = "echo-analytics-engine"
+
+[[services]]
+binding = "VAULT_API"
+service = "echo-vault-api"
+
+[[services]]
+binding = "SDK_GATEWAY"
+service = "echo-sdk-gateway"
+
+# Cron: check every 5 minutes
+[triggers]
+crons = ["*/5 * * * *"]
