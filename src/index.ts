@@ -1,7 +1,8 @@
 /**
- * echo-status-page v1.0.0
+ * echo-status-page v1.1.0
  * Public status page for ECHO OMEGA PRIME services.
  * Serves HTML dashboard + JSON API. Cron monitors every 5 min.
+ * v1.1: Incident detection, alert integration, uptime bars, latency tracking.
  */
 
 interface Env {
@@ -52,6 +53,11 @@ interface CheckResult {
   statusCode: number;
   error?: string;
   critical: boolean;
+}
+
+interface UptimeDay {
+  date: string;
+  uptime_pct: number;
 }
 
 const CORS = {
@@ -113,6 +119,103 @@ async function updateUptime(db: D1Database, results: CheckResult[]): Promise<voi
   }
 }
 
+// ─── Incident Detection ─────────────────────────────────────────────────────
+
+async function detectIncidents(db: D1Database, results: CheckResult[]): Promise<void> {
+  const downCritical = results.filter(r => r.status === 'down' && r.critical);
+  const downNonCritical = results.filter(r => r.status === 'down' && !r.critical);
+
+  // Check for open incidents
+  const { results: openIncidents } = await db.prepare(
+    "SELECT id, services FROM incidents WHERE status != 'resolved' ORDER BY created_at DESC LIMIT 10"
+  ).all();
+
+  const openServiceIds = new Set<string>();
+  for (const inc of (openIncidents ?? [])) {
+    try {
+      const svcs = JSON.parse((inc as { services: string }).services) as string[];
+      svcs.forEach(s => openServiceIds.add(s));
+    } catch { /* skip */ }
+  }
+
+  // Create new incidents for newly-down critical services
+  for (const svc of downCritical) {
+    if (!openServiceIds.has(svc.serviceId)) {
+      await db.prepare(
+        "INSERT INTO incidents (title, status, severity, services, message) VALUES (?, 'investigating', 'major', ?, ?)"
+      ).bind(
+        `${svc.name} is down`,
+        JSON.stringify([svc.serviceId]),
+        `${svc.name} returned status ${svc.statusCode}. ${svc.error || 'Service unreachable.'}`
+      ).run();
+    }
+  }
+
+  // Create incidents for non-critical services (minor severity)
+  for (const svc of downNonCritical) {
+    if (!openServiceIds.has(svc.serviceId)) {
+      await db.prepare(
+        "INSERT INTO incidents (title, status, severity, services, message) VALUES (?, 'investigating', 'minor', ?, ?)"
+      ).bind(
+        `${svc.name} degraded`,
+        JSON.stringify([svc.serviceId]),
+        `${svc.name} returned status ${svc.statusCode}. ${svc.error || 'Service unreachable.'}`
+      ).run();
+    }
+  }
+
+  // Auto-resolve incidents where all services are back up
+  const allUp = new Set(results.filter(r => r.status === 'up').map(r => r.serviceId));
+  for (const inc of (openIncidents ?? [])) {
+    try {
+      const svcs = JSON.parse((inc as { services: string }).services) as string[];
+      if (svcs.every(s => allUp.has(s))) {
+        await db.prepare(
+          "UPDATE incidents SET status = 'resolved', resolved_at = datetime('now') WHERE id = ?"
+        ).bind((inc as { id: number }).id).run();
+      }
+    } catch { /* skip */ }
+  }
+}
+
+// ─── Alert Integration ──────────────────────────────────────────────────────
+
+async function sendAlerts(results: CheckResult[]): Promise<void> {
+  const downCritical = results.filter(r => r.status === 'down' && r.critical);
+  if (downCritical.length === 0) return;
+
+  const msg = `🚨 STATUS ALERT: ${downCritical.length} critical service(s) DOWN — ${downCritical.map(s => s.name).join(', ')}`;
+
+  // Fire-and-forget to alert router + shared brain
+  try {
+    await fetch('https://echo-alert-router.bmcii1976.workers.dev/alert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Echo-API-Key': 'echo-omega-prime-forge-x-2026' },
+      body: JSON.stringify({
+        source: 'echo-status-page',
+        severity: 'critical',
+        title: `${downCritical.length} critical services down`,
+        message: msg,
+        services: downCritical.map(s => s.serviceId),
+      }),
+    });
+  } catch { /* best effort */ }
+
+  try {
+    await fetch('https://echo-shared-brain.bmcii1976.workers.dev/ingest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Echo-API-Key': 'echo-omega-prime-forge-x-2026' },
+      body: JSON.stringify({
+        instance_id: 'echo-status-page',
+        role: 'system',
+        content: msg,
+        importance: 9,
+        tags: ['alert', 'outage', 'status-page'],
+      }),
+    });
+  } catch { /* best effort */ }
+}
+
 // ─── HTML Page ──────────────────────────────────────────────────────────────
 
 function statusIcon(s: string): string {
@@ -121,30 +224,50 @@ function statusIcon(s: string): string {
   return '<span style="color:#ef4444">●</span>';
 }
 
-function renderHTML(results: CheckResult[], uptimeData: Record<string, number>): string {
+function uptimeBarColor(pct: number): string {
+  if (pct >= 99.5) return '#10b981';
+  if (pct >= 95) return '#f59e0b';
+  return '#ef4444';
+}
+
+function renderHTML(
+  results: CheckResult[],
+  uptimeToday: Record<string, number>,
+  uptimeHistory: Record<string, UptimeDay[]>,
+  incidents: Array<{ id: number; title: string; status: string; severity: string; created_at: string; resolved_at: string | null }>,
+): string {
   const allUp = results.every(r => r.status === 'up');
   const anyDown = results.some(r => r.status === 'down');
   const overallStatus = allUp ? 'All Systems Operational' : anyDown ? 'Partial Outage' : 'Degraded Performance';
   const overallColor = allUp ? '#10b981' : anyDown ? '#ef4444' : '#f59e0b';
 
+  const avgLatency = Math.round(results.reduce((s, r) => s + r.latencyMs, 0) / results.length);
   const categories = [...new Set(results.map(r => r.category))];
 
   const serviceRows = categories.map(cat => {
     const svcs = results.filter(r => r.category === cat);
-    const rows = svcs.map(r => `
+    const rows = svcs.map(r => {
+      const history = uptimeHistory[r.serviceId] || [];
+      const bars = history.slice(0, 30).reverse().map(d =>
+        `<div title="${d.date}: ${d.uptime_pct.toFixed(1)}%" style="width:4px;height:20px;background:${uptimeBarColor(d.uptime_pct)};border-radius:1px"></div>`
+      ).join('');
+
+      return `
       <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid #1e293b">
-        <div style="display:flex;align-items:center;gap:10px">
+        <div style="display:flex;align-items:center;gap:10px;min-width:200px">
           ${statusIcon(r.status)}
           <span style="color:#e2e8f0;font-weight:500">${r.name}</span>
           ${r.critical ? '<span style="font-size:10px;background:#7c3aed;color:white;padding:1px 6px;border-radius:4px">CRITICAL</span>' : ''}
         </div>
-        <div style="display:flex;align-items:center;gap:16px">
-          <span style="color:#64748b;font-size:13px">${r.latencyMs}ms</span>
+        <div style="display:flex;align-items:center;gap:2px;flex:1;justify-content:center">${bars}</div>
+        <div style="display:flex;align-items:center;gap:16px;min-width:180px;justify-content:flex-end">
+          <span style="color:#64748b;font-size:13px;font-family:monospace">${r.latencyMs}ms</span>
           <span style="color:${r.status === 'up' ? '#10b981' : r.status === 'degraded' ? '#f59e0b' : '#ef4444'};font-size:13px;font-weight:600;text-transform:uppercase">${r.status}</span>
-          ${uptimeData[r.serviceId] !== undefined ? `<span style="color:#94a3b8;font-size:12px">${uptimeData[r.serviceId].toFixed(1)}%</span>` : ''}
+          ${uptimeToday[r.serviceId] !== undefined ? `<span style="color:#94a3b8;font-size:12px">${uptimeToday[r.serviceId].toFixed(1)}%</span>` : ''}
         </div>
       </div>
-    `).join('');
+    `;
+    }).join('');
 
     return `
       <div style="margin-bottom:24px">
@@ -153,6 +276,34 @@ function renderHTML(results: CheckResult[], uptimeData: Record<string, number>):
       </div>
     `;
   }).join('');
+
+  // Incident history section
+  const openIncidents = incidents.filter(i => i.status !== 'resolved');
+  const recentResolved = incidents.filter(i => i.status === 'resolved').slice(0, 5);
+
+  const incidentSection = (openIncidents.length > 0 || recentResolved.length > 0) ? `
+    <div style="margin-top:32px">
+      <h2 style="color:#e2e8f0;font-size:18px;font-weight:700;margin-bottom:16px">Incidents</h2>
+      ${openIncidents.map(i => `
+        <div style="background:#ef444415;border:1px solid #ef444440;border-radius:8px;padding:12px 16px;margin-bottom:8px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="color:#ef4444;font-weight:600">${i.title}</span>
+            <span style="color:#ef4444;font-size:12px;text-transform:uppercase">${i.severity}</span>
+          </div>
+          <div style="color:#64748b;font-size:12px;margin-top:4px">${i.created_at}</div>
+        </div>
+      `).join('')}
+      ${recentResolved.map(i => `
+        <div style="background:#10b98108;border:1px solid #10b98120;border-radius:8px;padding:12px 16px;margin-bottom:8px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="color:#94a3b8;font-weight:500;text-decoration:line-through">${i.title}</span>
+            <span style="color:#10b981;font-size:12px">RESOLVED</span>
+          </div>
+          <div style="color:#475569;font-size:12px;margin-top:4px">${i.created_at} → ${i.resolved_at || '?'}</div>
+        </div>
+      `).join('')}
+    </div>
+  ` : '';
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -169,7 +320,7 @@ function renderHTML(results: CheckResult[], uptimeData: Record<string, number>):
   </style>
 </head>
 <body>
-  <div style="max-width:720px;margin:0 auto;padding:40px 20px">
+  <div style="max-width:800px;margin:0 auto;padding:40px 20px">
     <div style="text-align:center;margin-bottom:32px">
       <h1 style="font-size:28px;font-weight:800;background:linear-gradient(135deg,#9900ff,#ff6b35);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:4px">ECHO OMEGA PRIME</h1>
       <p style="color:#64748b;font-size:14px">System Status</p>
@@ -177,16 +328,29 @@ function renderHTML(results: CheckResult[], uptimeData: Record<string, number>):
 
     <div style="background:${overallColor}15;border:1px solid ${overallColor}40;border-radius:12px;padding:20px;text-align:center;margin-bottom:32px">
       <div style="font-size:20px;font-weight:700;color:${overallColor}">${overallStatus}</div>
-      <div style="color:#64748b;font-size:13px;margin-top:4px">Last checked: ${new Date().toUTCString()}</div>
+      <div style="color:#64748b;font-size:13px;margin-top:4px">
+        Last checked: ${new Date().toUTCString()} &bull; Avg latency: ${avgLatency}ms &bull; ${results.length} services
+      </div>
+    </div>
+
+    <div style="display:flex;justify-content:flex-end;margin-bottom:8px;gap:8px;font-size:11px;color:#64748b">
+      <span>30-day uptime →</span>
+      <div style="display:flex;gap:4px;align-items:center">
+        <div style="width:8px;height:8px;background:#10b981;border-radius:1px"></div> &gt;99.5%
+        <div style="width:8px;height:8px;background:#f59e0b;border-radius:1px;margin-left:4px"></div> &gt;95%
+        <div style="width:8px;height:8px;background:#ef4444;border-radius:1px;margin-left:4px"></div> &lt;95%
+      </div>
     </div>
 
     ${serviceRows}
 
+    ${incidentSection}
+
     <div style="text-align:center;margin-top:40px;padding-top:20px;border-top:1px solid #1e293b">
       <p style="color:#475569;font-size:12px">
-        Powered by <a href="https://echo-op.com">ECHO OMEGA PRIME</a> •
-        <a href="https://echo-ept.com">echo-ept.com</a> •
-        Monitored every 5 minutes
+        Powered by <a href="https://echo-op.com">ECHO OMEGA PRIME</a> &bull;
+        <a href="https://echo-ept.com">echo-ept.com</a> &bull;
+        Monitored every 5 minutes &bull; <a href="/api/status">JSON API</a>
       </p>
     </div>
   </div>
@@ -197,28 +361,55 @@ function renderHTML(results: CheckResult[], uptimeData: Record<string, number>):
 
 // ─── Route Handlers ─────────────────────────────────────────────────────────
 
+async function getUptimeHistory(db: D1Database): Promise<Record<string, UptimeDay[]>> {
+  const result: Record<string, UptimeDay[]> = {};
+  try {
+    const { results: rows } = await db.prepare(
+      'SELECT service_id, date, uptime_pct FROM uptime_daily WHERE date >= date("now", "-30 days") ORDER BY date DESC'
+    ).all();
+    for (const row of (rows ?? [])) {
+      const r = row as { service_id: string; date: string; uptime_pct: number };
+      if (!result[r.service_id]) result[r.service_id] = [];
+      result[r.service_id].push({ date: r.date, uptime_pct: r.uptime_pct });
+    }
+  } catch { /* no data yet */ }
+  return result;
+}
+
+async function getIncidents(db: D1Database, limit = 20): Promise<Array<{ id: number; title: string; status: string; severity: string; created_at: string; resolved_at: string | null }>> {
+  try {
+    const { results: rows } = await db.prepare(
+      'SELECT id, title, status, severity, created_at, resolved_at FROM incidents ORDER BY created_at DESC LIMIT ?'
+    ).bind(limit).all();
+    return (rows ?? []) as Array<{ id: number; title: string; status: string; severity: string; created_at: string; resolved_at: string | null }>;
+  } catch { return []; }
+}
+
 async function handleStatus(env: Env): Promise<Response> {
-  // Try cache first (5 min TTL)
   const cached = await env.CACHE.get('status_html');
   if (cached) {
     return new Response(cached, { headers: { 'Content-Type': 'text/html;charset=utf-8', 'Cache-Control': 'public, max-age=60' } });
   }
 
-  const results = await runAllChecks(env);
+  const [results, uptimeHistory, incidents] = await Promise.all([
+    runAllChecks(env),
+    getUptimeHistory(env.DB),
+    getIncidents(env.DB),
+  ]);
 
-  // Get uptime data for today
-  const uptimeData: Record<string, number> = {};
+  const uptimeToday: Record<string, number> = {};
+  const today = new Date().toISOString().slice(0, 10);
   try {
     const { results: rows } = await env.DB.prepare(
       'SELECT service_id, uptime_pct FROM uptime_daily WHERE date = ? ORDER BY service_id'
-    ).bind(new Date().toISOString().slice(0, 10)).all();
-    for (const row of rows ?? []) {
+    ).bind(today).all();
+    for (const row of (rows ?? [])) {
       const r = row as { service_id: string; uptime_pct: number };
-      uptimeData[r.service_id] = r.uptime_pct;
+      uptimeToday[r.service_id] = r.uptime_pct;
     }
-  } catch { /* no uptime data yet */ }
+  } catch { /* no data yet */ }
 
-  const html = renderHTML(results, uptimeData);
+  const html = renderHTML(results, uptimeToday, uptimeHistory, incidents);
   await env.CACHE.put('status_html', html, { expirationTtl: 300 });
   return new Response(html, { headers: { 'Content-Type': 'text/html;charset=utf-8', 'Cache-Control': 'public, max-age=60' } });
 }
@@ -233,8 +424,9 @@ async function handleApiStatus(env: Env): Promise<Response> {
     ok: true,
     overall: allUp ? 'operational' : 'degraded',
     services: results,
+    avg_latency_ms: Math.round(results.reduce((s, r) => s + r.latencyMs, 0) / results.length),
     checked_at: new Date().toISOString(),
-    version: '1.0.0',
+    version: '1.1.0',
   };
   await env.CACHE.put('status_json', JSON.stringify(response), { expirationTtl: 300 });
   return json(response);
@@ -244,7 +436,7 @@ async function handleHealth(env: Env): Promise<Response> {
   return json({
     ok: true,
     service: env.SERVICE_NAME,
-    version: env.VERSION,
+    version: '1.1.0',
     timestamp: new Date().toISOString(),
     monitored_services: MONITORED_SERVICES.length,
   });
@@ -257,12 +449,19 @@ async function handleUptime(env: Env): Promise<Response> {
   return json({ ok: true, data: rows ?? [] });
 }
 
-// ��── Cron ───────────────────────────────────────────────────────────────────
+async function handleIncidents(env: Env): Promise<Response> {
+  const incidents = await getIncidents(env.DB, 50);
+  return json({ ok: true, incidents });
+}
+
+// ─── Cron ───────────────────────────────────────────────────────────────────
 
 async function handleCron(env: Env): Promise<void> {
   const results = await runAllChecks(env);
   await storeChecks(env.DB, results);
   await updateUptime(env.DB, results);
+  await detectIncidents(env.DB, results);
+
   // Invalidate caches
   await env.CACHE.delete('status_html');
   await env.CACHE.delete('status_json');
@@ -272,10 +471,19 @@ async function handleCron(env: Env): Promise<void> {
     console.log(JSON.stringify({
       level: 'warn',
       service: 'echo-status-page',
+      version: '1.1.0',
       message: `${down.length} services down`,
       services: down.map(d => d.serviceId),
+      critical: down.filter(d => d.critical).map(d => d.serviceId),
     }));
+    // Send alerts for critical outages
+    await sendAlerts(results);
   }
+
+  // Prune old check data (keep 7 days)
+  try {
+    await env.DB.prepare("DELETE FROM checks WHERE checked_at < datetime('now', '-7 days')").run();
+  } catch { /* best effort */ }
 }
 
 // ─── Router ─────────────────────────────────────────────────────────────────
@@ -294,8 +502,15 @@ export default {
     if (method === 'GET' && path === '/health') return handleHealth(env);
     if (method === 'GET' && path === '/api/status') return handleApiStatus(env);
     if (method === 'GET' && path === '/api/uptime') return handleUptime(env);
+    if (method === 'GET' && path === '/api/incidents') return handleIncidents(env);
 
-    return json({ ok: false, error: 'not found' }, 404);
+    return json({ ok: false, error: 'not found', endpoints: [
+      'GET / — HTML status page',
+      'GET /health — Health check',
+      'GET /api/status — JSON status',
+      'GET /api/uptime — Uptime history',
+      'GET /api/incidents — Incident history',
+    ] }, 404);
   },
 
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
