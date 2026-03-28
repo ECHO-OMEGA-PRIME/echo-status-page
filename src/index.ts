@@ -1,9 +1,33 @@
 /**
- * echo-status-page v1.1.0
+ * echo-status-page v1.2.0
  * Public status page for ECHO OMEGA PRIME services.
  * Serves HTML dashboard + JSON API. Cron monitors every 5 min.
  * v1.1: Incident detection, alert integration, uptime bars, latency tracking.
+ * v1.2: Structured logging (slog), in-memory rate limiting.
  */
+
+// ── Structured logging ──
+function slog(level: 'info' | 'warn' | 'error', msg: string, data?: Record<string, unknown>) {
+  const entry = { ts: new Date().toISOString(), level, worker: 'echo-status-page', version: '1.2.0', msg, ...data };
+  if (level === 'error') console.error(JSON.stringify(entry));
+  else console.log(JSON.stringify(entry));
+}
+
+// ── In-memory rate limiting ──
+const RL_MAP = new Map<string, { c: number; t: number }>();
+function isRateLimited(ip: string, isWrite: boolean): boolean {
+  const limit = isWrite ? 30 : 120;
+  const key = `${ip}:${isWrite ? 'w' : 'r'}`;
+  const now = Date.now();
+  const entry = RL_MAP.get(key);
+  if (!entry || now - entry.t > 60000) {
+    RL_MAP.set(key, { c: 1, t: now });
+    if (RL_MAP.size > 5000) { const first = RL_MAP.keys().next().value; if (first) RL_MAP.delete(first); }
+    return false;
+  }
+  entry.c++;
+  return entry.c > limit;
+}
 
 interface Env {
   DB: D1Database;
@@ -505,14 +529,10 @@ async function handleCron(env: Env): Promise<void> {
 
   const down = results.filter(r => r.status === 'down');
   if (down.length > 0) {
-    console.log(JSON.stringify({
-      level: 'warn',
-      service: 'echo-status-page',
-      version: '1.1.0',
-      message: `${down.length} services down`,
+    slog('warn', `${down.length} services down`, {
       services: down.map(d => d.serviceId),
       critical: down.filter(d => d.critical).map(d => d.serviceId),
-    }));
+    });
     // Send alerts for critical outages
     await sendAlerts(env, results);
   }
@@ -548,6 +568,16 @@ export default {
 
     if (method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: CORS });
+    }
+
+    // Rate limiting (skip health)
+    if (path !== '/health') {
+      const ip = req.headers.get('cf-connecting-ip') || 'unknown';
+      const isWrite = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
+      if (isRateLimited(ip, isWrite)) {
+        slog('warn', 'Rate limited', { ip, method, path });
+        return withSecHeaders(json({ error: 'Rate limited' }, 429));
+      }
     }
 
     if (method === 'GET' && (path === '/' || path === '')) return handleStatus(env);
