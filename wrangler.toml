@@ -61,6 +61,69 @@ service = "echo-vault-api"
 binding = "SDK_GATEWAY"
 service = "echo-sdk-gateway"
 
+# Revenue products
+[[services]]
+binding = "CRM"
+service = "echo-crm"
+
+[[services]]
+binding = "HELPDESK"
+service = "echo-helpdesk"
+
+[[services]]
+binding = "BOOKING"
+service = "echo-booking"
+
+[[services]]
+binding = "INVOICE"
+service = "echo-invoice"
+
+[[services]]
+binding = "CALL_CENTER"
+service = "echo-call-center"
+
+# Infrastructure
+[[services]]
+binding = "FLEET_COMMANDER"
+service = "echo-fleet-commander"
+
+[[services]]
+binding = "BUILD_ORCHESTRATOR"
+service = "echo-build-orchestrator"
+
+[[services]]
+binding = "WEBHOOK_ROUTER"
+service = "echo-webhook-router"
+
+[[services]]
+binding = "SERVICE_REGISTRY"
+service = "echo-service-registry"
+
+[[services]]
+binding = "AUTONOMOUS_BUILDER"
+service = "echo-autonomous-builder"
+
+# Intelligence
+[[services]]
+binding = "GRAPH_RAG"
+service = "echo-graph-rag"
+
+[[services]]
+binding = "MEMORY_PRIME"
+service = "echo-memory-prime"
+
+[[services]]
+binding = "AI_ORCHESTRATOR"
+service = "echo-ai-orchestrator"
+
+[[services]]
+binding = "OMNISYNC"
+service = "omniscient-sync"
+
+[[services]]
+binding = "SWARM_BRAIN"
+service = "echo-swarm-brain"
+
 # Cron: check every 5 minutes
 [triggers]
 crons = ["*/5 * * * *"]

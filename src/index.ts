@@ -18,6 +18,21 @@ interface Env {
   ANALYTICS_ENGINE: Fetcher;
   VAULT_API: Fetcher;
   SDK_GATEWAY: Fetcher;
+  CRM: Fetcher;
+  HELPDESK: Fetcher;
+  BOOKING: Fetcher;
+  INVOICE: Fetcher;
+  CALL_CENTER: Fetcher;
+  FLEET_COMMANDER: Fetcher;
+  BUILD_ORCHESTRATOR: Fetcher;
+  WEBHOOK_ROUTER: Fetcher;
+  SERVICE_REGISTRY: Fetcher;
+  AUTONOMOUS_BUILDER: Fetcher;
+  GRAPH_RAG: Fetcher;
+  MEMORY_PRIME: Fetcher;
+  AI_ORCHESTRATOR: Fetcher;
+  OMNISYNC: Fetcher;
+  SWARM_BRAIN: Fetcher;
   VERSION: string;
   SERVICE_NAME: string;
 }
@@ -32,14 +47,35 @@ interface ServiceDef {
 }
 
 const MONITORED_SERVICES: ServiceDef[] = [
+  // Core AI (4)
   { id: 'engine-runtime', name: 'Engine Runtime', category: 'Core AI', binding: 'ENGINE_RUNTIME', healthPath: '/health', critical: true },
   { id: 'shared-brain', name: 'Shared Brain', category: 'Core AI', binding: 'SHARED_BRAIN', healthPath: '/health', critical: true },
   { id: 'echo-chat', name: 'Echo Chat', category: 'Core AI', binding: 'ECHO_CHAT', healthPath: '/health', critical: true },
   { id: 'knowledge-forge', name: 'Knowledge Forge', category: 'Core AI', binding: 'KNOWLEDGE_FORGE', healthPath: '/health', critical: true },
+  // Voice & Knowledge (2)
   { id: 'speak-cloud', name: 'Speak Cloud (TTS)', category: 'Voice', binding: 'SPEAK_CLOUD', healthPath: '/health', critical: false },
   { id: 'doctrine-forge', name: 'Doctrine Forge', category: 'Knowledge', binding: 'DOCTRINE_FORGE', healthPath: '/health', critical: false },
+  // Intelligence (4)
+  { id: 'graph-rag', name: 'GraphRAG', category: 'Intelligence', binding: 'GRAPH_RAG', healthPath: '/health', critical: false },
+  { id: 'memory-prime', name: 'Memory Prime', category: 'Intelligence', binding: 'MEMORY_PRIME', healthPath: '/health', critical: false },
+  { id: 'ai-orchestrator', name: 'AI Orchestrator', category: 'Intelligence', binding: 'AI_ORCHESTRATOR', healthPath: '/health', critical: true },
+  { id: 'swarm-brain', name: 'Swarm Brain', category: 'Intelligence', binding: 'SWARM_BRAIN', healthPath: '/health', critical: false },
+  // Revenue Products (5)
+  { id: 'crm', name: 'CRM', category: 'Revenue Products', binding: 'CRM', healthPath: '/health', critical: false },
+  { id: 'helpdesk', name: 'Helpdesk', category: 'Revenue Products', binding: 'HELPDESK', healthPath: '/health', critical: false },
+  { id: 'booking', name: 'Booking', category: 'Revenue Products', binding: 'BOOKING', healthPath: '/health', critical: false },
+  { id: 'invoice', name: 'Invoicing', category: 'Revenue Products', binding: 'INVOICE', healthPath: '/health', critical: false },
+  { id: 'call-center', name: 'Call Center', category: 'Revenue Products', binding: 'CALL_CENTER', healthPath: '/health', critical: false },
+  // Infrastructure (6)
   { id: 'autonomous-daemon', name: 'Fleet Daemon', category: 'Infrastructure', binding: 'AUTONOMOUS_DAEMON', healthPath: '/health', critical: true },
+  { id: 'fleet-commander', name: 'Fleet Commander', category: 'Infrastructure', binding: 'FLEET_COMMANDER', healthPath: '/health', critical: true },
+  { id: 'build-orchestrator', name: 'Build Orchestrator', category: 'Infrastructure', binding: 'BUILD_ORCHESTRATOR', healthPath: '/status', critical: true },
+  { id: 'webhook-router', name: 'Webhook Router', category: 'Infrastructure', binding: 'WEBHOOK_ROUTER', healthPath: '/health', critical: false },
+  { id: 'service-registry', name: 'Service Registry', category: 'Infrastructure', binding: 'SERVICE_REGISTRY', healthPath: '/health', critical: false },
+  { id: 'autonomous-builder', name: 'Auto Builder', category: 'Infrastructure', binding: 'AUTONOMOUS_BUILDER', healthPath: '/health', critical: false },
   { id: 'analytics-engine', name: 'Analytics Engine', category: 'Infrastructure', binding: 'ANALYTICS_ENGINE', healthPath: '/health', critical: false },
+  { id: 'omnisync', name: 'OmniSync', category: 'Infrastructure', binding: 'OMNISYNC', healthPath: '/', critical: false },
+  // Security & Platform (2)
   { id: 'vault-api', name: 'Vault API', category: 'Security', binding: 'VAULT_API', healthPath: '/health', critical: true },
   { id: 'sdk-gateway', name: 'SDK Gateway', category: 'Platform', binding: 'SDK_GATEWAY', healthPath: '/health', critical: true },
 ];
