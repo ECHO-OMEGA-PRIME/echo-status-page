@@ -35,6 +35,7 @@ interface Env {
   SWARM_BRAIN: Fetcher;
   VERSION: string;
   SERVICE_NAME: string;
+  ECHO_API_KEY: string;
 }
 
 interface ServiceDef {
@@ -116,7 +117,7 @@ async function checkService(env: Env, svc: ServiceDef): Promise<CheckResult> {
   try {
     const binding = env[svc.binding] as Fetcher;
     const res = await binding.fetch(`http://internal${svc.healthPath}`, {
-      headers: { 'X-Echo-API-Key': 'echo-omega-prime-forge-x-2026' },
+      headers: { 'X-Echo-API-Key': env.ECHO_API_KEY },
     });
     const latency = Date.now() - start;
     const status: 'up' | 'degraded' | 'down' = res.ok ? (latency > 5000 ? 'degraded' : 'up') : 'down';
@@ -216,7 +217,7 @@ async function detectIncidents(db: D1Database, results: CheckResult[]): Promise<
 
 // ─── Alert Integration ──────────────────────────────────────────────────────
 
-async function sendAlerts(results: CheckResult[]): Promise<void> {
+async function sendAlerts(env: Env, results: CheckResult[]): Promise<void> {
   const downCritical = results.filter(r => r.status === 'down' && r.critical);
   if (downCritical.length === 0) return;
 
@@ -226,7 +227,7 @@ async function sendAlerts(results: CheckResult[]): Promise<void> {
   try {
     await fetch('https://echo-alert-router.bmcii1976.workers.dev/alert', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Echo-API-Key': 'echo-omega-prime-forge-x-2026' },
+      headers: { 'Content-Type': 'application/json', 'X-Echo-API-Key': env.ECHO_API_KEY },
       body: JSON.stringify({
         source: 'echo-status-page',
         severity: 'critical',
@@ -240,7 +241,7 @@ async function sendAlerts(results: CheckResult[]): Promise<void> {
   try {
     await fetch('https://echo-shared-brain.bmcii1976.workers.dev/ingest', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Echo-API-Key': 'echo-omega-prime-forge-x-2026' },
+      headers: { 'Content-Type': 'application/json', 'X-Echo-API-Key': env.ECHO_API_KEY },
       body: JSON.stringify({
         instance_id: 'echo-status-page',
         role: 'system',
@@ -513,7 +514,7 @@ async function handleCron(env: Env): Promise<void> {
       critical: down.filter(d => d.critical).map(d => d.serviceId),
     }));
     // Send alerts for critical outages
-    await sendAlerts(results);
+    await sendAlerts(env, results);
   }
 
   // Prune old check data (keep 7 days)
